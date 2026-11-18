@@ -329,8 +329,38 @@ def notify(topic, item, c, dry):
     }
     if dry:
         print(f"[ALERT p{prio}] {payload['title']}\n    " + " | ".join(lines) + f"\n    {payload['click']}")
-        return
-    send(payload)
+    return payload
+
+
+QUIET_START, QUIET_END = 0, 8  # no alerts 00:00-08:00 UK time; held alerts go out at 08:00
+MORNING_MAX = 20                # most held alerts sent one by one; the rest are summarised
+
+
+def uk_time(utc):
+    """UK local time: GMT, or BST (UTC+1) from the last Sunday of March to the last Sunday
+    of October, switching at 01:00 UTC. Written out so no timezone package is needed."""
+    def last_sunday(month):
+        d = datetime(utc.year, month, 31, 1, tzinfo=timezone.utc)
+        return d - timedelta(days=(d.weekday() + 1) % 7)
+    bst = last_sunday(3) <= utc < last_sunday(10)
+    return utc + timedelta(hours=1 if bst else 0)
+
+
+def is_quiet(utc):
+    return QUIET_START <= uk_time(utc).hour < QUIET_END
+
+
+def send_held(topic, state):
+    """Send alerts held overnight, most important first."""
+    held = sorted(state.pop("held", []), key=lambda p: -p["priority"])
+    for p in held[:MORNING_MAX]:
+        p["title"] = ("🌙 " + p["title"])[:200]
+        p["message"] = "Listed overnight, may be gone\n" + p["message"]
+        send(p)
+    if len(held) > MORNING_MAX:
+        send({"topic": topic, "title": f"🌙 {len(held) - MORNING_MAX} more overnight matches",
+              "priority": 2, "message": f"Only the {MORNING_MAX} most important were sent."})
+    return len(held)
 
 
 def send(payload):
@@ -398,7 +428,13 @@ def run():
                 continue
             c = classify(it)
             if c:
-                notify(topic, it, c, dry)
+                payload = notify(topic, it, c, dry)
+                if dry:
+                    pass
+                elif is_quiet(now):
+                    state.setdefault("held", []).append(payload)  # sent at 08:00
+                else:
+                    send(payload)
                 sent += 1
         if show_all:
             break
@@ -409,15 +445,22 @@ def run():
     cutoff = now - timedelta(days=30)
     state["seen"] = {k: v for k, v in state["seen"].items() if (parse_time(v) or now) > cutoff}
 
-    # Daily heartbeat at ~08:00 UTC.
-    today = now.date().isoformat()
-    if not dry and now.hour >= 8 and state.get("heartbeat") != today:
+    quiet = is_quiet(now)
+    held_sent = 0
+    if not dry and not quiet and state.get("held"):
+        held_sent = send_held(topic, state)
+
+    # Daily heartbeat once quiet hours end.
+    uk = uk_time(now)
+    today = uk.date().isoformat()
+    if not dry and uk.hour >= QUIET_END and state.get("heartbeat") != today:
         state["heartbeat"] = today
         send({"topic": topic, "title": "Laptop watcher running", "priority": 1, "tags": ["white_check_mark"],
-              "message": f"Tracking {len(state['seen'])} listings. {sent} alert(s) this run."})
+              "message": f"Tracking {len(state['seen'])} listings. {held_sent} overnight alert(s) delivered."})
     if not dry:
         save_state(path, state)
-    print(f"done: {sent} alert(s), {len(state['seen'])} listings tracked, seeding={seeding}")
+    print(f"done: {sent} match(es){' held for morning' if quiet else ''}, {held_sent} overnight sent, "
+          f"{len(state['seen'])} listings tracked, seeding={seeding}")
 
 
 if __name__ == "__main__":

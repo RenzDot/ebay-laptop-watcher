@@ -26,10 +26,8 @@ CHEAP_LIMIT = 1000.0  # 5060 and "anything else" must be under this
 
 # Searches run every poll. Browse API keyword OR syntax: "(a, b, c)".
 QUERIES = [
-    # Main GPUs: alerts up to £1200 whatever the build.
-    "(3080, 3080ti, 4070, 4080, 5070, 5070ti, 5060, a5000)",
-    # Other GPUs: only alert under £1000 with a metal build.
-    "(3070, 3070ti, 3060, 4060, 4050, 2080, a4000, a3000)",
+    # Wanted GPUs (3080 class and up). Weaker GPUs are never alerted, so not searched.
+    "(3080, 3080ti, 4070, 4080, 4090, 5060, 5070, 5070ti, 5080, a5000)",
     # Metal-build models whose titles often leave out the GPU.
     "(legion 7, zephyrus duo, alienware x17, alienware m17, razer blade, p1 gen, "
     "x1 extreme, beast x25, aero, precision 7760, scar 17, strix 17, ge76, gs66, zbook studio)",
@@ -146,11 +144,14 @@ MODELS = [
     M(r"surface laptop studio", "all", 14.4),
 ]
 
-TOP_GPUS = {"3080 16GB", "3080 Ti", "4070", "4080", "5070", "5070 Ti", "A5000"}
+# GPU rules. Any GPU not listed here is ignored: 3070 Ti, 3070, 4060, 5050, 4050, 3060,
+# 3050, A4000 and anything weaker.
+TOP_GPUS = {"3080 16GB", "3080 Ti", "4070", "4080", "4090", "5070", "5070 Ti", "5080", "5090", "A5000"}
+#   "3080" (VRAM not stated): treated like TOP, flagged "check VRAM"
+#   "5060": only under £1000
+#   "3080 8GB": only under £1000 with a metal build
 STAR_GPUS = {"3080 16GB", "3080 Ti", "A5000"}
 METAL_OK = ("all", "partial", "varies")  # builds that count as metal for the under-£1000 rule
-# GPUs too weak to be worth an alert, even all-metal and cheap. Edit to taste.
-WEAK_GPU = re.compile(r"^(T\d+|A[12]000|GTX.*|MX.*|30[5]0.*|20[56]0.*|1[0-6]\d0.*)$")
 WORKSTATION = re.compile(r"thinkpad|\bp1 gen|x1 extreme|precision|zbook", re.I)
 
 
@@ -197,6 +198,9 @@ def detect_gpu(t):
     m = re.search(r"\b(t[56]00|t1[02]00|t2000|gtx ?\d{4}|mx ?\d{3})\b", t)  # weak GPUs
     if m:
         return m.group(1).upper()
+    m = re.search(r"\b(5090|5080|4090)\b", t)
+    if m:
+        return m.group(1)
     if re.search(r"5070\s*ti", t):
         return "5070 Ti"
     if re.search(r"\b5070\b", t):
@@ -215,7 +219,7 @@ def detect_gpu(t):
         if re.search(r"3080\s*\(?\s*8\s*gb|8\s*gb\s*(gddr6\s*)?(rtx\s*)?3080|8gb vram", t):
             return "3080 8GB"
         return "3080"
-    m = re.search(r"\b(30[5-7]0(\s*ti)?|40[5-6]0|2080(\s*(ti|super))?|2070(\s*super)?)\b", t)
+    m = re.search(r"\b(30[5-7]0(\s*ti)?|40[5-6]0|5050|20[5-8]0(\s*(ti|super))?|16[56]0(\s*ti)?)\b", t)
     return m.group(1).upper() if m else None
 
 
@@ -262,7 +266,8 @@ def classify(item):
 
     if size and size >= 18:
         return None
-    if size and size >= 17 and gpu not in ("3080 16GB", "3080 Ti", "A5000", "5070", "5070 Ti", "3080"):
+    if size and size >= 17 and gpu not in ("3080 16GB", "3080 Ti", "A5000", "5070", "5070 Ti", "5080",
+                                           "5090", "3080"):
         if gpu is not None:
             return None
 
@@ -279,12 +284,12 @@ def classify(item):
     elif gpu == "5060":
         if price >= CHEAP_LIMIT:
             return None
-    elif WEAK_GPU.search(gpu):
-        return None
-    else:
+    elif gpu == "3080 8GB":
         # Partial metal (e.g. metal lid) counts too.
         if not (price < CHEAP_LIMIT and metal in METAL_OK):
             return None
+    else:
+        return None  # 3070 Ti, 4060 and anything weaker
 
     if gpu in STAR_GPUS and metal == "all":
         level = "star"

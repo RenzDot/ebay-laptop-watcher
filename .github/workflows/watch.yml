@@ -1,0 +1,70 @@
+# A "workflow" is a recipe GitHub runs on a fresh Linux machine (a "runner").
+# GitHub reads every .yml file in .github/workflows/ automatically.
+name: Laptop watcher
+
+# "on" = what starts a run.
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (UTC). GitHub often runs these late under load.
+    - cron: "0 9 * * 1"     # Mondays 09:00: also keeps the schedule alive (see last step)
+  workflow_dispatch:         # adds a "Run workflow" button on the Actions tab
+    inputs:
+      mode:
+        description: "watch = normal check, test = send a test notification"
+        type: choice
+        options: [watch, test]
+        default: watch
+
+# Never run two checks at the same time; a new one waits for the previous one.
+concurrency:
+  group: watcher
+  cancel-in-progress: false
+
+# What the run's built-in token may do: read the code, and re-enable this workflow.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # 1. Copy this repository's files onto the runner.
+      - uses: actions/checkout@v4
+
+      # 2. Runners start empty every time, so the list of listings already seen
+      #    is kept in GitHub's cache between runs.
+      - name: Restore seen listings
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: seen-${{ github.run_id }}
+          restore-keys: seen-
+
+      # 3. Run the watcher. Secrets come from Settings > Secrets and variables > Actions;
+      #    GitHub hides their values in the logs.
+      - name: Check eBay
+        env:
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          POLLS: "3"        # check 3 times per run...
+          POLL_GAP: "120"   # ...2 minutes apart, to cover for late scheduled runs
+        run: python3 watcher.py ${{ inputs.mode == 'test' && 'test' || '' }}
+
+      # 4. Save the updated list for the next run.
+      - name: Save seen listings
+        if: always() && hashFiles('state/seen.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: seen-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # 5. GitHub pauses schedules in repos with no activity for 60 days.
+      #    Re-enabling the workflow once a week resets that timer.
+      - name: Keep schedule alive
+        if: github.event.schedule == '0 9 * * 1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable watch.yml --repo "${{ github.repository }}"
